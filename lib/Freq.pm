@@ -5,13 +5,10 @@ use strict;
 use warnings;
 use vars qw( $VERSION );
 
-$VERSION = '0.16';
+$VERSION = '0.17';
 
-#use Fcntl;
 use FileHandle;
-#use Freq::Isr;
 use CDB_File;
-use Compress::Zlib;
 
 # Constants for data about each word.
 use constant NDOCS  => 0;
@@ -51,7 +48,7 @@ sub open_write {
             nsegments => 0,
             nwords => 0,
             ndocs => 0,
-            seg_max_words => 2 * 1024 * 1024, # 2 million words
+            seg_max_words => 5 * 1024 * 1024, # 5 million words
             isrs => {},
             seg_nwords => 0,
             seg_ndocs => 0,
@@ -61,7 +58,6 @@ sub open_write {
         index_document($self, "initial", "abcdefghijklmnopqrstuvwxyz");
     }
 
-    isrcache_init($self);
     return bless $self, $type;
 }
 
@@ -91,7 +87,7 @@ sub open_read {
         return undef;
     }
 
-    isrcache_init($self);
+    isrcache_init($self->{cdb});
     return bless $self, $type;
 }
 
@@ -103,8 +99,9 @@ sub close_index {
     if( $self->{mode} eq 'WRONLY' ){
         $self->_write_segment();
     }
-
-    untie %{ $self->{cdb} };
+    else {
+        untie %{ $self->{cdb} };
+    }
 
     return 1;
 }
@@ -120,26 +117,25 @@ sub tokenize_std {
 
 
 
-# Isrs are cached in a closure
+# Isrs are cached in a closure initialized with the cdb disk hash
 {
     my %isrs = ();
     my %nrequests = ();
     my %timestamp = ();
-    my $self = {};
+    my $cdb = {};
 
-    # this is called by the open_* functions to 
-    # instantiate the self object. That way only 
+    # this is called by the open_read function to 
+    # instantiate the cdb object. That way only 
     # the individual word is necessary to call isr().
     sub isrcache_init {
-        $self = shift;
+        $cdb = shift;
     }
 
     sub isr {
-        #my $self = shift;
         my $word = shift;
     
         # return the empty isr if no occurrence.
-        return new_isr() unless exists $self->{cdb}->{$word};
+        return new_isr() unless exists $cdb->{$word};
         $nrequests{$word}++;
         $timestamp{$word} = time;
         return $isrs{$word} if exists $isrs{$word};
@@ -154,7 +150,7 @@ sub tokenize_std {
             delete $isrs{$_} for @words[0..9];
         }
 
-        my $isr = _read_isr($self->{cdb}, $word);    
+        my $isr = _read_isr($cdb, $word);    
         $isrs{$word} = $isr;
         return $isr;
     }
@@ -874,11 +870,21 @@ sub isr_align_match {
 
 Freq - An inverted text index.
 
+=head1 ABSTRACT
+
+THIS IS ALPHA SOFTWARE
+
+Freq is a text indexer and search utility written in pure Perl. It has several special features not to be found in most available similar programs, namely arbitrarily complex sequence and alternation queries, and proximity searches with both exact counts and limits. There is no result ranking (yet). 
+
+The index format draws some ideas from the Lucene search engine, with some simplifications and enhancements. The index segments are stored in a CDB disk hash (from dj bernstein).
+
 =head1 SYNOPSIS
 
 Index documents:
 
   # cat textcorpus.txt | tokenize | indexstream index_dir
+  # cat textcorpus.txt | tokenize | stopstop | indexstream index_dir
+  # optimize index_dir
 
 Search:
 
@@ -898,7 +904,7 @@ Search:
   $index = Freq->open_read( "indexname" );
 
   # Find all docs containing a phrase
-  $result = $index->doc_hash( "this phrase and no other phrase" );
+  $result = $index->search( "this phrase and no other phrase" );
 
   # result is hashref:
   # { doc1 => [ match1, match2 ... matchN ],
@@ -916,19 +922,14 @@ Sequences of words are enclosed in angle brackets '<' and '>'. Alternations are 
 Two operators are available to do proximity searches. '#wN' represents *at least* N intervening skips between words (the number of between words plus 1). Thus "<The #w8 dog>" would match the text "The quick brown fox jumped over the lazy dog". If #w7 or lesser had been used it would not match, but if #w9 or greater had been used it would still match. Also there is the '#tN' operator, which represents *exactly* N intervening skips. Thus for the above example "<The #t8 dog>", and no other value, would match. These operators can be used after words or alternations, but no other place. 
 
 
-=head2 EXPORT
-
-None. Use programming API as shown.
-
-
 =head1 AUTHOR
 
 Ira Joseph Woodhead, ira at sweetpota dot to
 
 =head1 SEE ALSO
 
-Lucene
-Search::InvertedIndex
+ Lucene
+ CDB_File
 
 =cut
 
