@@ -3,6 +3,7 @@ package Freq;
 require 5.005_62;
 use strict;
 use warnings;
+no warnings "recursion";
 use vars qw( $VERSION );
 
 use FileHandle;
@@ -15,9 +16,9 @@ use constant DX     => 2; # doc index
 use constant PX     => 3; # position index
 use constant LASTDOC => 4;
 
-$VERSION = '0.21';
+$VERSION = '0.22';
 use Inline Config =>
-            VERSION => '0.21',
+            VERSION => '0.22',
             NAME => 'Freq';
 use Inline 'C';
 
@@ -152,7 +153,7 @@ sub tokenize_std {
 
         # remove the top 10 isrs according to least-requested and 
         # least-recently requested.
-        if(1000 < scalar keys %isrs){
+        if(50000 < scalar keys %isrs){
             my $time = time;
             my @words = sort { $a <=> $b } 
                         map { $nrequests{$_} / ($time - $timestamp{$_}) }
@@ -180,7 +181,7 @@ sub _read_isr {
     $isr->[NWORDS] = $nwords;
     $isr->[NDOCS] = $ndocs;
     $isr->[LASTDOC] = $lastdoc;
-    @{ $isr->[DX] }  = unpack "w*", substr($ISR, 0, $dxlen);
+    $isr->[DX] = substr($ISR, 0, $dxlen);
     substr($ISR, 0, $dxlen) = '';
     my $pxrunlen_len = unpack "L", $ISR;
     substr($ISR, 0, 4) = '';
@@ -227,15 +228,17 @@ sub index_document {
         $isr->[NDOCS]++;
         $isr->[NWORDS] += scalar @$deltas;
         if( @$deltas == 1 ){
-            push @{ $isr->[DX] }, 
-                2 * $docdelta,       # 
-                $deltas->[0]; # the single position delta
+            $isr->[DX] .= 
+                pack("w*",
+                    2 * $docdelta,       # 
+                    $deltas->[0]); # the single position delta
         }
         else { # term count > 1
             $deltas = pack "w*", @$deltas;
-            push @{ $isr->[DX] }, 
+            $isr->[DX] .= 
+                pack("w*", 
                 2 * $docdelta + 1, # doc delta*2, +1 for >1 term count in doc
-                scalar @{ $isr->[PX] }; # index to position deltas in PX
+                scalar @{ $isr->[PX] }); # index to position deltas in PX
             push @{ $isr->[PX] }, $deltas;
         }
     }
@@ -252,7 +255,7 @@ sub new_isr {
     my $isr = [];
     $isr->[NDOCS] = 0;
     $isr->[NWORDS] = 0;
-    $isr->[DX] = [];
+    $isr->[DX] = '';
     $isr->[PX] = [];
     $isr->[LASTDOC] = 0;
     return $isr;
@@ -324,13 +327,12 @@ sub _serialize_isr {
     my $isr = shift;
 
     my $newisr = '';
-    $newisr .= pack "L", $isr->[NDOCS];# num of docs
-    $newisr .= pack "L", $isr->[NWORDS]; # num of positions.
+    $newisr .= pack "L", $isr->[NDOCS];   # num of docs
+    $newisr .= pack "L", $isr->[NWORDS];  # num of positions.
     $newisr .= pack "L", $isr->[LASTDOC]; # last document with this word
 
-    my $dxst = pack "w*", @{ $isr->[DX] }; # doc deltas
-    $newisr .= pack "L", length $dxst; # runlength
-    $newisr .= $dxst; 
+    $newisr .= pack "L", length $isr->[DX]; # runlength
+    $newisr .= $isr->[DX]; 
 
     my $runlengths = pack "w*", map {length $_} @{ $isr->[PX] };
     $newisr .= pack "L", length $runlengths;
@@ -368,8 +370,6 @@ sub optimize_index {
                grep { /^\d+$/ }
                map { s/^.+?\/(\d+)$/$1/; $_ }
                glob("$path/*");
-
-    #@dirs = @dirs[0..10]; # compact only 10 at once to save memory...
 
     print STDERR "Compacting segments ", join(" ", @dirs), "\n";
 
@@ -460,6 +460,10 @@ sub _append_isr {
     my($isr0, $seg0ndocs, $isr1) = @_;
     return $isr0 unless $isr1->[NDOCS];
 
+    # convert from ber-string to integer array
+    my @isr0dx = unpack "w*", $isr0->[DX]; $isr0->[DX] = \@isr0dx;
+    my @isr1dx = unpack "w*", $isr1->[DX]; $isr1->[DX] = \@isr1dx;
+
     # adjust first doc delta to previous segment's doc count
     my $adjust = ($seg0ndocs - $isr0->[LASTDOC]);
     my $ptrflag = $isr1->[DX]->[0] % 2;
@@ -481,162 +485,19 @@ sub _append_isr {
     $isr0->[NWORDS] += $isr1->[NWORDS];
     $isr0->[LASTDOC] = $seg0ndocs + $isr1->[LASTDOC];
 
+    # convert from integer array back to ber-string
+    $isr0->[DX] = pack "w*", @{ $isr0->[DX] };
+    $isr1->[DX] = pack "w*", @{ $isr1->[DX] };
+
     return $isr0;
 }
 
 
 
 
-sub search {
-    my $self = shift;
-    my $term = shift;
-
-    my($firstisr, $aligner, $matcher) = $self->isrlist($term);
-    return {} unless $aligner;
-
-    my %docmatches = (); # docid => match position list
-    my $docid = 1;
-    while(my $nextdoc = $aligner->($docid)){
-        unless($docid == $nextdoc){
-            $docid = $nextdoc;
-            next;
-        }
-        my $pos = 0;
-        while($pos = $matcher->($pos)){
-            push @{ $docmatches{$self->{ids}->[$docid]} }, $pos;
-        }
-        $docid++;
-    }
-
-    return \%docmatches;
-}
-
-# Takes an isr and returns the list of docids for the term
-sub doclist {
-    my $isr = shift;
-    my $n = 0;
-    my $sum = 0;
-    my @results = ();
-    while(defined $isr->[DX]->[$n]){
-        push @results, $sum += int($isr->[DX]->[$n]/2);
-        $n += 2;
-    }
-    return @results;
-}
-
-sub isrlist {
-    my $self = shift;
-    my $term = shift;
-    my @items = split(/\s+/, $term);
-
-    my $aligner = sub { return $_[0]; };
-    my $matcher = sub { return $_[0]; };
-
-    my $isr;
-    while (@items){
-        my ($interval, $ltype, $word) = next_term_interval( \@items );
-        $isr = isr($word);
-        return undef unless $isr->[NDOCS];
-        # first term gets infinite interval
-        $interval = $self->{nwords} unless @items; 
-        ($aligner, $matcher) = 
-            isrator($interval, $ltype, $isr, $aligner, $matcher);
-    }
-    return ($isr, $aligner, $matcher);
-}
-
-# interval, limit type, word. 'limit type' is 0 for hard limit
-# (wildcard-style), 1 for soft limit (#wN).
-sub next_term_interval {
-    my $terms = shift;
-    return undef unless @$terms;
-    my $t = pop @$terms;
-    return (1, 1, $t) unless @$terms;
-    my $i = pop @$terms;
-    if ($i =~ /^#w(\d+)/){
-        return ($1, 1, $t);
-    }
-    elsif($i eq '*'){
-        my $interval = 0;
-        while( $i eq '*'){
-            $interval++;
-            $i = pop @$terms;
-        }
-        push @$terms, $i;
-        return ($interval, 0, $t);
-    }
-    push @$terms, $i;
-    return (1, 1, $t);
-}
-
-# Returns two functions using one closure. $align_doc function 
-# checks that all terms are in a given document. $match function 
-# returns each match position in turn, until there are no more.
-sub isrator {
-    my ($interval, $softlimit, $isr, $align_next_doc, $match_next) = @_;
-    my $dxsum = 0; # doc id for this isr
-    my $dxn = 0; # location in DX
-    my $px = ''; # current pos list
-    my $pxsum = 0; # token location in doc
-    my $pxn = 0; # location in PX
-
-    my $align_doc = sub {
-        my $docid = shift;
-        return undef unless $docid;
-        if($docid > $dxsum){  # new doc
-            ($dxsum, $dxn, $px) = sum_to_doc($isr, $dxsum, $dxn, $docid);
-            ($pxsum, $pxn) = (0, 0);
-        }
-        return $align_next_doc->($dxsum);
-    };
-
-    my $matcher = sub {
-        my $pos = shift;
-        if($pxsum <= $pos){
-            ($pxsum, $pxn) = sum_to_pos($px, $pos, $pxn, $pxsum);
-        }
-        return undef unless ($pxsum > $pos);
-        while( ($pxsum-$pos) <= $interval){
-            return $pxsum if ($softlimit and $match_next->($pxsum));
-            ($pxsum, $pxn) = sum_to_pos($px, $pos, $pxn, $pxsum);
-            last unless $pxsum < $pos;
-        }
-        return $pxsum if (!$softlimit and ($pxsum-$pos == $interval+1));
-        return undef;
-    };
-
-    return $align_doc, $matcher;
-}
 
 
-
-
-
-
-# Return the new PX list corresponding to doc $pos, starting with doc 
-# $sum, DX index $n.
-sub sum_to_doc {
-    my($isr, $sum, $n, $pos) = @_;
-
-    return () unless defined $isr->[DX]->[$n];
-    my $dx = $isr->[DX];
-    while($sum < $pos){ # current doc < target doc
-        $sum += int($dx->[$n]/2);
-        $n += 2;
-        last unless defined $dx->[$n];
-    }
-    return () if ($sum < $pos); # no documents left
-    my $px = ($dx->[$n-2] % 2) ? 
-              $isr->[PX]->[$dx->[$n-1]] :  # PX list
-              pack "w", $dx->[$n-1];       # single position delta (BER)
-    return ($sum, $n, $px);
-}
-
-
-
-
-
-# NEW FANCY SHMANCY SEARCHING
+# SEARCHING
 
 # finds docs with search terms in logical relationship indicated in 
 # query. 
@@ -654,7 +515,7 @@ sub fancy_search {
         }
         my ($pos0, $posN) = (0, 0);
         while(($pos0, $posN) = $matcher->($pos0)){
-            push @{$docmatches{$self->{ids}->[$docid]}}, $pos0;
+            push @{$docmatches{$self->{ids}->[$docid]}}, "$pos0-$posN";
             #$pos0++;
         }
 #$docmatches{$self->{ids}->[$docid]} = 1;
@@ -833,7 +694,7 @@ sub and_aligner {
 sub and_matcher {
     my ($this, $next, $interval) = @_;
     my ($this0, $thisN, $next0, $nextN) = (0, 0, 0, 0);
-    my $exactadjust = ($interval < 0) ? -$interval : 0; 
+    my $exactadjust = ($interval < 0) ? -$interval : 1; 
     $interval = abs($interval);
 
     return sub {
@@ -845,7 +706,7 @@ sub and_matcher {
         while($thisN < ($next0-$interval)){
             return () unless 
                 ($this0, $thisN) = $this->($pos, $next0-$interval-1);
-            if($thisN > ($next0-$exactadjust)){
+            if($thisN > ($next0-$exactadjust+1)){
                 return () unless 
                     ($next0, $nextN) = $next->($thisN);
             }
@@ -861,7 +722,7 @@ sub isr_align_match {
 
     my $isr = isr($word);
 
-    if(!defined $isr->[DX]->[0]){ # empty isr?
+    if(!$isr->[DX]){ # empty isr?
         return sub { return undef }, sub { return () };
     }
 
@@ -877,7 +738,13 @@ sub isr_align_match {
             $docid = shift;
             return undef unless defined $dxsum;
             if($docid > $dxsum){  # new doc
-                ($dxsum, $dxn, $px) = sum_to_doc($isr, $dxsum, $dxn, $docid);
+                ($dxsum, $dxn, $px) = 
+                    sum_to_doc($isr->[DX], $dxsum, $dxn, $docid);
+                $px = defined $px ?
+                          ($px % 2) ? 
+                              $isr->[PX]->[int $px/2] : # string px
+                              pack "w", $px/2 :         # single pos delta
+                          undef;
                 ($pxsum, $pxn) = (0, 0);
             }
             return $dxsum;
@@ -893,6 +760,25 @@ sub isr_align_match {
         };
 }
 
+
+# Return the new PX list corresponding to doc $pos, starting with doc 
+# $sum, DX index $n.
+sub sum_to_doc_perl {
+    my($isr, $sum, $n, $pos) = @_;
+
+    return () unless defined $isr->[DX]->[$n];
+    my $dx = $isr->[DX];
+    while($sum < $pos){ # current doc < target doc
+        $sum += int($dx->[$n]/2);
+        $n += 2;
+        last unless defined $dx->[$n];
+    }
+    return () if ($sum < $pos); # no documents left
+    my $px = ($dx->[$n-2] % 2) ? 
+              $isr->[PX]->[$dx->[$n-1]] :  # PX list
+              pack "w", $dx->[$n-1];       # single position delta (BER)
+    return ($sum, $n, $px);
+}
 
 1;
 
@@ -979,7 +865,7 @@ __C__
 int next_integer_length(char* px){
     unsigned int length = 0;
     unsigned char mask = (1 << 7);
-    if(!*px) return 0; // empty string
+    //if(!*px) return 0; // empty string
     while(*px & mask){
         px++;
         length++;
@@ -1033,6 +919,49 @@ void sum_to_pos(SV* pxSV, int pos, int pxn, int pxsum){
     INLINE_STACK_RESET;
     INLINE_STACK_PUSH(sv_2mortal(newSViv(pxsum)));
     INLINE_STACK_PUSH(sv_2mortal(newSViv(pxn)));
+    INLINE_STACK_DONE;
+    return;
+}
+
+
+/* dx is a string of chars representing BER compressed integers.
+   These are document id deltas. dxn is the current
+   string index, dxsum is the current sum. sum_to_doc() computes
+   the first position in the corpus at or past pos, and finds the
+   integer index into px (if it exists. if it does not exist, it
+   finds the single position delta from dx).
+*/
+void sum_to_doc(SV* dxSV, int dxsum, int dxn, int pos){
+    char* dx = SvPV_nolen( dxSV );
+    int pxval = 0;
+    int last_dx_delta = 0;
+
+    INLINE_STACK_VARS;
+
+    dx += dxn; // advance char pointer to current dxn
+    while(*dx && (dxsum < pos)){
+        unsigned int len = next_integer_length(dx);
+        last_dx_delta = next_integer_val(dx);
+        dxsum += floor(last_dx_delta/2);
+		dx += len; // advance ptr
+        dxn += len;
+
+		len = next_integer_length(dx);
+        pxval = next_integer_val(dx);
+		dx += len;
+		dxn += len;
+    }
+
+    if(dxsum < pos){
+        INLINE_STACK_RESET;
+        INLINE_STACK_DONE;
+	    return;
+    }
+	
+    INLINE_STACK_RESET;
+    INLINE_STACK_PUSH(sv_2mortal(newSViv(dxsum)));
+    INLINE_STACK_PUSH(sv_2mortal(newSViv(dxn)));
+    INLINE_STACK_PUSH(sv_2mortal(newSViv(pxval * 2 + (last_dx_delta % 2))));
     INLINE_STACK_DONE;
     return;
 }

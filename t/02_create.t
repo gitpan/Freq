@@ -30,7 +30,7 @@ ok( $retval, 'index closed' );
 
 $index = Freq->open_read('testindex');
 ok( $index, 'index opened' );
-my $thedeserializedisr = Freq::isr('the');
+my $thedeserializedisr = Freq::_read_isr($index->{cdb}, 'the');
 
 is_deeply($thedeserializedisr, $theisr, 'isr deserialize correct');
 

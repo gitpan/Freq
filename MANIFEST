@@ -14,7 +14,6 @@ bin/tokenize-sb
 Freq.pm
 t/01_load.t
 t/02_create.t
-t/03_search.t
 t/04_optim.t
 t/05_logical.t
 t/data/book01
