@@ -12,3 +12,5 @@ Revision history for Perl extension Freq.
 0.19 Tue Feb  1 15:20:48 PST 2005
 	- Added Inline'd sum_to_pos for both speed and memory savings.
 
+0.20 Fri Feb  4 12:51:32 PST 2005 
+	- fixed bug in next_integer_length causing infinite loop; changed to older module file layout to avoid conflict with Inline::MakeMaker

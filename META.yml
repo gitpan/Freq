@@ -1,8 +1,8 @@
 # http://module-build.sourceforge.net/META-spec.html
 #XXXXXXX This is a prototype!!!  It will change in the future!!! XXXXX#
 name:         Freq
-version:      0.19
-version_from: lib/Freq.pm
+version:      0.20
+version_from: Freq.pm
 installdirs:  site
 requires:
     CDB_File:                      0.01

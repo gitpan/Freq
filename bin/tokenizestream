@@ -6,6 +6,7 @@
 # cat *.txt | tokenize_std | index_this
 # This version adds a name and surrounds text with 
 
+use Freq;
 my $usage = <<"EOF";
 
 Usage: tokenize
@@ -42,7 +43,7 @@ while(<>){
 	}
 	$_ = $1 if /<TEXT>(.+?)<\/TEXT>/ms;
 
-	print join " ", Freq::tokenize($_);
+	print join " ", Freq::tokenize_std($_);
 	print "\n</DOC>\n";
 }
 

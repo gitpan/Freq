@@ -48,8 +48,8 @@ while(<>){
 	
 	s|<[^>]+>||msg;
 
-	print STDERR chr(13), "INDEXING: $doc_name ($.)\t\t" 
-		if ( $doc_count%50 == 0 );
+	print STDERR chr(13), "INDEXING: $doc_name ($.)\t\t";
+        #if ( $doc_count%50 == 0 );
  	$word_count += $index->index_document( $doc_name, $_ );
 	$doc_count++;
 

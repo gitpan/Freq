@@ -11,7 +11,7 @@ bin/search
 bin/stopstop
 bin/tokenizestream
 bin/tokenize-sb
-lib/Freq.pm
+Freq.pm
 t/01_load.t
 t/02_create.t
 t/03_search.t

@@ -15,9 +15,9 @@ use constant DX     => 2; # doc index
 use constant PX     => 3; # position index
 use constant LASTDOC => 4;
 
-$VERSION = '0.19';
+$VERSION = '0.20';
 use Inline Config =>
-            VERSION => '0.19',
+            VERSION => '0.20',
             NAME => 'Freq';
 use Inline 'C';
 
@@ -51,7 +51,7 @@ sub open_write {
             nsegments => 0,
             nwords => 0,
             ndocs => 0,
-            seg_max_words => 2 * 1024 * 1024, # 2 million words
+            seg_max_words => 5 * 1024 * 1024, # 5 million words
             isrs => {},
             seg_nwords => 0,
             seg_ndocs => 0,
@@ -170,7 +170,7 @@ sub _read_isr {
     my $cdb = shift;
     my $word = shift;
     my $isr = new_isr();
-    return $isr unless exists $cdb->{$word};
+    #return $isr unless exists $cdb->{$word};
     my $ISR = $cdb->{$word};
 
     my($ndocs, $nwords, $lastdoc, $dxlen) = unpack "L4", $ISR;
@@ -219,8 +219,7 @@ sub index_document {
         $last{$word} = $position;
     }
 
-    for my $word (keys %seen){
-        my $deltas = $seen{$word};
+    while(my($word, $deltas) = each %seen){
         $isrs->{$word} = new_isr() unless exists $isrs->{$word};
         my $isr = $isrs->{$word};
         my $docdelta = $docid - $isr->[LASTDOC];
@@ -293,6 +292,7 @@ sub _write_segment {
     open IDS, ">$path/$nsegments/ids";
     print IDS "$_\n" for @{$self->{ids}};
     close IDS;
+    @{ $self->{ids} } = ();
 
     # segment conf
     open CONF, ">$path/$nsegments/conf";
@@ -315,7 +315,7 @@ sub _write_segment {
     close CONF;
 
     $self->{seg_nwords} = 0;
-    $self->{seg_docs} = 0;
+    $self->{seg_ndocs} = 0;
 
     return "\nwrote segment with $count isrs.\n";
 }
@@ -372,15 +372,18 @@ sub optimize_index {
     #@dirs = @dirs[0..10]; # compact only 10 at once to save memory...
 
     print STDERR "Compacting segments ", join(" ", @dirs), "\n";
+
     # gather necessary info for each segment
     my (@segments, %words);
     for my $segment (@dirs){
         my $conf = _configure("$path/$segment");
         my %cdb;
         tie %cdb, 'CDB_File', "$path/$segment/CDB";
-        $words{$_} = 1 for grep {length($_) < 26} keys %cdb;
+        my %localwords = ();
+        $localwords{$_} = 1 for grep {length($_) < 26} keys %cdb;
+        $words{$_} = 1 for keys %localwords;
         print STDERR "Gathered ", scalar keys %words, " words at segment $segment.           \r";
-        push @segments, [ $conf, \%cdb, "$path/$segment" ];
+        push @segments, [ $conf, \%cdb, "$path/$segment", \%localwords ];
     }
 
 
@@ -394,15 +397,20 @@ sub optimize_index {
         die "$0: new CDB_File failed: $!\n";
 
     my $ntokens = scalar keys %words;
-    for my $word (keys %words){
+    my $t0 = time;
+    while(my($word, undef) = each %words){
         $ntokens--;
-        print STDERR "Compacting $ntokens th word: $word                       \r";
+        if(time-$t0 > 2){
+            print STDERR "Compacting $ntokens th word: $word                       \r";
+            $t0 = time;
+        }
         my $isr = new_isr();
         my $ndocs = 0;
         for my $segment (@segments){
-            my($conf, $cdb) = @$segment;
-            my $next = _read_isr($cdb, $word);
-            $isr = _append_isr($isr, $ndocs, $next); 
+            my($conf, $cdb, undef, $localwords) = @$segment;
+            if(exists $localwords->{$word}){ 
+                $isr = _append_isr($isr, $ndocs, _read_isr($cdb, $word));
+            }
             $ndocs += $conf->{seg_ndocs};
         }
         $newidx->insert($word, _serialize_isr($isr));
@@ -975,7 +983,6 @@ int next_integer_length(char* px){
         px++;
         length++;
     }
-    if(!*px) return 0; // sanity check
 	length++; // final char
     return (int) length;
 }
