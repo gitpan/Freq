@@ -40,10 +40,9 @@ while(<>){
 	else {
 		next; 
 	}
-	s|<[^>]+>||g; # Get rid of all other tags.
-	s|(\d)| _$1_ |g; # Count each digit.
-	$_ = lc $_;
-	print join " ", split m|\W+|;
+	$_ = $1 if /<TEXT>(.+?)<\/TEXT>/ms;
+
+	print join " ", Freq::tokenize($_);
 	print "\n</DOC>\n";
 }
 

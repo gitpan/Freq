@@ -1,6 +1,0 @@
-Revision history for Perl extension Freq::Isr.
-
-0.01  Thu Aug  2 16:51:23 2001
-	- original version; created by h2xs 1.20 with options
-		-PAX -n Freq::Isr
-

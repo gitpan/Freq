@@ -34,6 +34,7 @@ $/ = '</DOC>';
 my $john_doe = 0;
 my $doc_count = 0;
 my $word_count = 0;
+my $anoncount = 0;
 while(<>){
 
 	my $doc_name = '';
@@ -41,7 +42,7 @@ while(<>){
 		$doc_name = $1;
 	}
 	else {
-		print "John Doe document, skipping.\n";
+		$anoncount++;
 		next;
 	}
 	
@@ -54,9 +55,7 @@ while(<>){
 
 }
 
-#$index->precalc_stats();
-
-$index->close();
+$index->close_index();
 
 print "Doc count this run = $doc_count.\n";
 print "Word count this run = $word_count.\n";
