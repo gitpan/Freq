@@ -1,0 +1,17 @@
+Changes
+Freq.pm
+Isr/Changes
+Isr/Isr.pm
+Isr/Makefile.PL
+Isr/MANIFEST
+MANIFEST
+Makefile.PL
+bin/freqprime
+bin/indexstream
+bin/ngrams
+bin/stats
+bin/stopstop
+bin/tokenize
+t/01_load.t
+t/02_create.t
+t/03_search.t

@@ -1,0 +1,180 @@
+#!/usr/bin/perl -w
+
+use strict;
+use Freq;
+use Text::Scan;
+
+my $usage = <<"EOU";
+
+Usage: freqprime [--strip=file] corpus_dir docset_dir [ngrams.txt]
+
+freqprime makes a special calculation on a docset and a Freq 
+corpus (see the man page for Freq). The default behavior is 
+straightforward: You have a small docset you want to compare with a 
+large, already-indexed corpus which exists in the default 
+directory. Simply specify the desired corpus, the docset 
+directory, and an optional designation of ngrams file, and each 
+ngram will be output along with its "salience" calculation. If 
+you specify no ngrams, they will be extracted from the docset 
+into "ngrams.txt" and used in the calculations. By default, the 
+results of the calculation are deposited in a directory 
+"docset-freqprime" in the current directory. This includes the file 
+"ngrams.txt", "salience.txt".
+
+You can find out what Freq corpora are available by looking in 
+//attila/indices. 
+
+If you would like to figure out how to create a Freq index, 
+consult the man page for Freq (type "man Freq"). If you're going 
+to use freqprime, it's probably a good idea to get familiar with 
+all the Freq tools anyway.
+
+See also:
+
+ngrams, tokenize, indexstream, stats, stopstop
+
+EOU
+
+my @opts = grep /^--/, @ARGV;
+@ARGV = grep !/^--/, @ARGV;
+
+if( grep /^--help/, @opts ){
+	print $usage;
+	exit 0;
+}
+
+my @stripfiles = grep /^--strip=/, @opts;
+@stripfiles = map { s/^--strip=//; $_ } @stripfiles;
+if( @stripfiles > 1 ){
+	die "No more than one stripfile allowed! Type 'freqprime --help' for more information\n";
+}
+my $stripfile = $stripfiles[0];
+
+my $indexname = shift;
+my $docsetname = shift;
+my $ngrams = shift || "";
+my $resultdir = $1 if $docsetname =~ m|([^/]+)/?$|;
+$resultdir .= "-freqprime";
+
+my ($docset, $corpus);
+
+# Create index of docset.
+
+if( -e $resultdir ){
+	print STDERR <<"EOU";
+Found docset already indexed.
+Remove or rename dir $resultdir to continue.
+
+EOU
+
+	exit 0;
+}
+else {
+	system("cat $docsetname/\* | tokenize | stopstop | indexstream $resultdir");
+}
+
+# Extract ngrams if necessary. Since docset is small (?) threshold = 1.
+unless( $ngrams ){
+
+	$ngrams = "$resultdir/ngrams.txt";
+
+	for my $n( 1..3 ){
+		print STDERR "Extracting $n-grams\n";
+		system("cat $docsetname/\* | tokenize | stopstop | ngrams $n 1  >> $resultdir/$n-grams.txt");
+	}
+
+
+	# Sort for optimal searching.
+	print STDERR "Sorting ngrams...";
+	system("cat $resultdir/1-grams.txt $resultdir/2-grams.txt $resultdir/3-grams.txt > $resultdir/ngrams.txt");
+	unlink "$resultdir/1-grams.txt", 
+			"$resultdir/2-grams.txt", 
+			"$resultdir/3-grams.txt";
+	system("sort $resultdir/ngrams.txt > $resultdir/ngrams.srt");
+	rename "$resultdir/ngrams.srt", "$resultdir/ngrams.txt";
+	print STDERR "done.\n\n";
+
+
+# Strip out known stuff here.
+	if( $stripfile ){
+		my $start = time();
+		print STDERR "Stripping known ngrams...";
+		system("cat $stripfile | perl -ne 's|\\cM||;print' | comm -1 -3 - $resultdir/ngrams.txt > $resultdir/ngrams.strip");
+		rename "$resultdir/ngrams.strip", "$resultdir/ngrams.txt";
+		my $end = time();
+		print STDERR "done. Took ", $end - $start, " seconds.\n\n";
+	}
+
+# Split back into respective ngram files
+	print STDERR "Resplitting grams...";
+	open TERMS, "<$resultdir/ngrams.txt";
+	open ONE, ">$resultdir/1-grams.txt";
+	open TWO, ">$resultdir/2-grams.txt";
+	open THR, ">$resultdir/3-grams.txt";
+	while(<TERMS>){
+		my $n = 0;
+		while ( m| |g ) { $n++ }
+		SWITCH: {
+			print ONE if $n == 0;
+			print TWO if $n == 1;
+			print THR if $n == 2;
+		}
+	}
+	close TERMS;
+	close ONE;
+	close TWO;
+	close THR;
+	print STDERR "done.\n";
+
+}
+
+# Open the two indices and extract info
+
+print STDERR "Calculating salience...\n";
+$docset = Freq->open_read( "$resultdir" );
+$corpus = Freq->open_read( $indexname );
+
+my $corpdocs = ( $corpus->index_info )[1];
+
+for my $n ( 1..3 ){
+	open OUT, ">$resultdir/$n-tmp.txt" or die $!;
+	open TERMS, "<$resultdir/$n-grams.txt" or die $!;
+	while(<TERMS>){
+		chomp;
+
+	# HACK vs mysterious repeated-word segfault
+		if( $n == 3 ){
+			my @w = split(/\s+/, $_);
+			if($w[1] eq $w[2]){
+				print OUT "0.0000\t$_\n";
+				next;
+			}
+		}
+
+		print STDERR chr(13), $_;
+		my $cf = ( $docset->stats($_) )[0];
+		my $df = ( $corpus->stats($_) )[1];
+	
+		my $salience = $cf * (log($corpdocs + 1) - log($df + 1) + 1 );
+		$salience = sprintf("%.4f", $salience);
+	
+		print OUT "$salience\t$_\n";
+	}
+	close OUT;
+
+	system("sort -nrk1,1 $resultdir/$n-tmp.txt > $resultdir/$n-salience.txt");
+}
+
+
+unlink "$resultdir/1-tmp.txt", 
+		"$resultdir/2-tmp.txt",
+		"$resultdir/3-tmp.txt",
+		"$resultdir/CDB", 
+		"$resultdir/ids",
+		"$resultdir/conf";
+
+$corpus->close();
+$docset->close();
+exit 0;
+
+

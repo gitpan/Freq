@@ -1,0 +1,135 @@
+#!/usr/bin/perl -w
+# Takes an index name plus a query string in single quotes, 
+# and returns a list of results.
+
+use strict;
+use Freq;
+
+my $usage = <<"EOU";
+
+Usage: stats [options] corpus_dir
+	Options:
+		--query      The query issued to stats.
+		--term       The preprocessed term stats is using.
+		--matches    Matches detected for term in corpus.
+		--totalwords Total words in corpus.
+		--docmatches Matching documents in corpus. 
+		--totaldocs  Total documents in corpus.
+		--cf         Frequency of term per million words.
+		--df         Frequency of document matches per 100,000 docs.
+		--tdf        Average occurrence of term in matched docs.
+		--docsigma   Standard deviation of matches per document.
+		--intsigma   Standard deviation of words per match interval.
+		--everything All of the above in that order (supersedes all).
+
+Returns results one per line, tab-delimited.
+
+You should either pipe a stream of queries into stats
+or issue them interactively via stdin. Examples:
+
+# cat termqueries.txt | stats --everything corpus_dir > output.txt
+# stats --matches --intsigma corpus_dir
+
+EOU
+
+my @indices = grep m/^[^-]/, @ARGV;
+my @flags =   grep m/^--/,    @ARGV;
+@flags = map { s/^--//; $_ } @flags;
+my %flags = map { $_ => 1 } @flags;
+
+if( exists $flags{help} ){
+	print STDERR $usage;
+	exit 0;
+}
+
+if( exists $flags{everything} ){
+	@flags = qw{ query term matches 
+				totalwords docmatches totaldocs 
+				cf df tdf docsigma intsigma };
+}
+
+@ARGV = ();
+
+my %indices = ();
+my %nwords = ();
+my %ndocs = ();
+
+for my $indexname (@indices){
+    print STDERR "Adding index $indexname...\n";
+    my $index = Freq->open_read( $indexname );
+    my ( $words_in_corpus, $docs_in_corpus ) = $index->index_info();
+    $indices{$indexname} = $index;
+    $nwords{$indexname} = $words_in_corpus;
+    $ndocs{$indexname} = $docs_in_corpus;
+}
+
+
+while(<>){
+	chomp;
+	s|\cM||; # No CTRL-Ms please.
+	my $query = $_;
+
+	s|(\d)| _$1_ |g;
+	s|\W+| |g;  # Squeeze non-word chars to a space.
+	
+	my $term = lc $_;
+
+		print STDERR chr(13), $term;
+
+		my %stats = ();
+
+		if( keys %indices == 1 ){
+			for my $name ( keys %indices ){
+				my @termstats = $indices{$name}->stats( $term );
+				%stats =
+					(query => $query,
+					term => $term,
+					matches => $termstats[0],
+					totalwords => $nwords{$name},
+					docmatches => $termstats[1],
+					totaldocs => $ndocs{$name},
+					docsigma => sprintf("%.4f", $termstats[2]),
+					intsigma => sprintf("%.4f", $termstats[3]),
+					cf => sprintf("%.4f", 
+							$termstats[0]*1_000_000/$nwords{$name}),
+					df => sprintf("%.4f",
+							$termstats[1]*100_000/$ndocs{$name}),
+					tdf => sprintf("%.4f",
+							$termstats[1] ? $termstats[0]/$termstats[1] : 0)
+					);
+	
+			}
+		}
+#		else{ # multiple indices
+#			my @docs_hashes = ();
+#			for my $name ( @indx ){
+#				my ($termcount, $docs_hash) = 
+#					$indices{$name}->doc_hash( $query );
+#				my @stats = 
+#					($termcount,
+#					$nwords{$name},
+#					scalar keys %{ $docs_hash },
+#					$ndocs{$name}
+#					);
+#				push @docs_hashes, $docs_hash;
+#				$fstats[$_] += $stats[$_] for (0..3);
+#			}
+#			my $sigma = sigma( $fstats[0], @docs_hashes );
+#			push @fstats, $sigma;
+#		}
+
+#		print STDERR "Answering with ", join " ", @fstats, "\n";
+#		print $query, "\t", join "\t", @fstats, "\n";
+
+	for my $flag (@flags){
+		exists $stats{$flag} && do { print $stats{$flag}, "\t"; };
+	}
+
+	print "\n";
+
+}
+
+
+exit 0;
+
+
