@@ -26,12 +26,12 @@ while(<>){
 
     print STDERR chr(13), $term;
 
-    #my $t0 = [gettimeofday];
+    my $t0 = [gettimeofday];
     my $result = $i->fancy_search( $term );
-    #my $interval = tv_interval( $t0 );
-    print "Found ", scalar keys %$result, " docs\n";
+    my $interval = tv_interval( $t0 );
+    print "Found ", scalar keys %$result, " docs, $interval secs\n";
     next unless %$result;
-    print join("\n", keys %$result), "\n";
+    print join("\n", sort keys %$result), "\n";
 #    $terms{$term} = [ keys %$result ];
 #    push @{ $docs{$_} }, \$term for keys %$result;
 }

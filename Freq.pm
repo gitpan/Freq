@@ -15,9 +15,9 @@ use constant DX     => 2; # doc index
 use constant PX     => 3; # position index
 use constant LASTDOC => 4;
 
-$VERSION = '0.20';
+$VERSION = '0.21';
 use Inline Config =>
-            VERSION => '0.20',
+            VERSION => '0.21',
             NAME => 'Freq';
 use Inline 'C';
 
@@ -620,16 +620,15 @@ sub sum_to_doc {
 
     return () unless defined $isr->[DX]->[$n];
     my $dx = $isr->[DX];
-    my $px = [];
     while($sum < $pos){ # current doc < target doc
         $sum += int($dx->[$n]/2);
-        $px = ($dx->[$n] % 2) ? 
-               $isr->[PX]->[$dx->[$n+1]] :  # PX list
-               pack "w", $dx->[$n+1];       # single position delta (BER)
         $n += 2;
         last unless defined $dx->[$n];
     }
-    $sum = undef if ($sum < $pos); # no documents left
+    return () if ($sum < $pos); # no documents left
+    my $px = ($dx->[$n-2] % 2) ? 
+              $isr->[PX]->[$dx->[$n-1]] :  # PX list
+              pack "w", $dx->[$n-1];       # single position delta (BER)
     return ($sum, $n, $px);
 }
 
@@ -866,6 +865,7 @@ sub isr_align_match {
         return sub { return undef }, sub { return () };
     }
 
+    my $docid = 0; # doc id requested
     my $dxsum = 0; # doc id for this isr
     my $dxn = 0; # location in DX
     my $px = ''; # current pos list
@@ -874,8 +874,8 @@ sub isr_align_match {
 
     return 
         sub { # the align
-            my $docid = shift;
-            #return undef unless (defined $docid and defined $dxsum);
+            $docid = shift;
+            return undef unless defined $dxsum;
             if($docid > $dxsum){  # new doc
                 ($dxsum, $dxn, $px) = sum_to_doc($isr, $dxsum, $dxn, $docid);
                 ($pxsum, $pxn) = (0, 0);
@@ -883,8 +883,9 @@ sub isr_align_match {
             return $dxsum;
         },
         sub { # the match
+            return () unless (defined $dxsum) and 
+                             ($docid == $dxsum); # the align is valid
             my (undef, $pos) = @_;
-            #return () unless defined $pos and defined $pxsum;
             if($pxsum <= $pos){
                 ($pxsum, $pxn) = sum_to_pos($px, $pos, $pxn, $pxsum);
             }
@@ -1007,8 +1008,11 @@ int next_integer_val(char* px){
    string index, pxsum is the current sum. sum_to_pos() computes
    the first position in a document past pos.
 */
-void sum_to_pos(char* px, int pos, int pxn, int pxsum){
+void sum_to_pos(SV* pxSV, int pos, int pxn, int pxsum){
+    char* px = SvPV_nolen( pxSV );
+
     INLINE_STACK_VARS;
+/*
     if(strlen(px) <= pxn){
         INLINE_STACK_RESET;
         INLINE_STACK_PUSH(sv_2mortal(newSViv(0)));
@@ -1016,6 +1020,7 @@ void sum_to_pos(char* px, int pos, int pxn, int pxsum){
         INLINE_STACK_DONE;
         return;
     }
+*/
 
     px += pxn; // advance char pointer to current pxn
     while(*px && (pxsum <= pos)){
