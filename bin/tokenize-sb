@@ -26,50 +26,51 @@ EOF
 
 my $sb = new Text::Scan;
 while(<DATA>){
-	chomp;
-	my @SB = split(/\t/, $_);
-	$sb->insert($SB[2], $SB[1]);
+    chomp;
+    my @SB = split(/\t/, $_);
+    $sb->insert($SB[2], $SB[1]);
 }
 $sb->insert("\n\n", 0);
 
 $/ = '</DOC>';
 
 while(<>){
-	chomp;
-	next if $_ eq '';
-	# If no document name, skip it.
-	if( m|<DOCNO>([^<]+)</DOCNO>|ms ){
-		print "\n<DOC>\n<DOCNO>$1</DOCNO>\n";
-	}
-	else {
-		next; 
-	}
-	$_ = $1 if /<TEXT>(.+?)<\/TEXT>/ms;
-	s|<[^>]+>||g; # Get rid of all other tags.
-	s|(\d)| $1 |g; # Count each digit.
-	s|_| |g;       # underscores bah!
-	$_ = lc $_;
+    chomp;
+    next if $_ eq '';
+    # If no document name, skip it.
+    if( m|<DOCNO>([^<]+)</DOCNO>|ms ){
+        print "\n<DOC>\n<DOCNO>$1</DOCNO>\n";
+    }
+    else {
+        next; 
+    }
+    $_ = $1 if /<TEXT>(.+?)<\/TEXT>/ms;
+    s|<[^>]+>||g; # Get rid of all other tags.
+    #s|(\d)| $1 |g; # Count each digit.
+    s|_| |g;       # underscores bah!
+    $_ = lc $_;
     my @tokens = split m|\b|;
-	my $offset = 0;
-	unless($tokens[0] =~ /\w/){
-		$offset = length($tokens[0]);
-		shift @tokens;
-	}
-	my @locations = ();
-	while(@tokens){
-		my $word = shift @tokens;
-		my $junk = shift @tokens;
-		$junk ||= '';
-		push @locations, [ $word, $offset ];
-		$offset += length($word . $junk);
-	}
-	
-	my @sbs = $sb->multiscan($_);
-	push @locations, [ 'SB', $_->[1] + $_->[2] ] for @sbs;
-	@locations = sort { $a->[1] <=> $b->[1] } @locations;
-	print join " ", map { $_->[0] } @locations;
-	print " SB";
-	print "\n</DOC>\n";
+    my $offset = 0;
+    # if the first token is a word, start the $offset early
+    unless($tokens[0] =~ /\w/){
+        $offset = length($tokens[0]);
+        shift @tokens;
+    }
+    my @locations = ();
+    while(@tokens){
+        my $word = shift @tokens;
+        my $junk = shift @tokens;
+        $junk ||= '';
+        push @locations, [ $word, $offset ];
+        $offset += length($word . $junk);
+    }
+    
+    my @sbs = $sb->multiscan($_);
+    push @locations, [ 'SB', $_->[1] + $_->[2] ] for @sbs;
+    @locations = sort { $a->[1] <=> $b->[1] } @locations;
+    print join " ", map { $_->[0] } @locations;
+    print " SB";
+    print "\n</DOC>\n";
 }
 
 

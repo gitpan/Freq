@@ -9,3 +9,6 @@ Revision history for Perl extension Freq.
 0.17  Thu Jan 27 16:04:25 PST 2005
 	- Documentation corrections; added ABSTRACT; isr closure update; removed dependency on latest perl; added dependency on FileHandle;
 
+0.19 Tue Feb  1 15:20:48 PST 2005
+	- Added Inline'd sum_to_pos for both speed and memory savings.
+

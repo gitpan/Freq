@@ -1,6 +1,8 @@
 Changes
+INSTALL
 MANIFEST
 Makefile.PL
+README
 bin/docize
 bin/freqsearch
 bin/indexstream

@@ -5,8 +5,6 @@ use strict;
 use warnings;
 use vars qw( $VERSION );
 
-$VERSION = '0.17';
-
 use FileHandle;
 use CDB_File;
 
@@ -17,6 +15,11 @@ use constant DX     => 2; # doc index
 use constant PX     => 3; # position index
 use constant LASTDOC => 4;
 
+$VERSION = '0.19';
+use Inline Config =>
+            VERSION => '0.19',
+            NAME => 'Freq';
+use Inline 'C';
 
 
 sub open_write {
@@ -48,7 +51,7 @@ sub open_write {
             nsegments => 0,
             nwords => 0,
             ndocs => 0,
-            seg_max_words => 5 * 1024 * 1024, # 5 million words
+            seg_max_words => 2 * 1024 * 1024, # 2 million words
             isrs => {},
             seg_nwords => 0,
             seg_ndocs => 0,
@@ -100,12 +103,19 @@ sub close_index {
         $self->_write_segment();
     }
     else {
-        untie %{ $self->{cdb} };
+        $self->DESTROY;
     }
 
     return 1;
 }
 
+sub DESTROY {
+    my $self = shift;
+    untie %{ $self->{cdb} };
+    @{ $self->{ids} } = ();
+    $self = undef;
+    return 1;
+}
 
 sub tokenize_std {
     my $doc = shift;
@@ -172,15 +182,18 @@ sub _read_isr {
     $isr->[LASTDOC] = $lastdoc;
     @{ $isr->[DX] }  = unpack "w*", substr($ISR, 0, $dxlen);
     substr($ISR, 0, $dxlen) = '';
-    my @px = unpack "w*", $ISR;
-    my @PX = ();
-    while(@px){
-        my $runlen = shift @px;
-        my @deltas = ();
-        push @deltas, shift @px for (1..$runlen);
-        push @PX, \@deltas;
+    my $pxrunlen_len = unpack "L", $ISR;
+    substr($ISR, 0, 4) = '';
+    my @pxrunlens = unpack "w*", substr($ISR, 0, $pxrunlen_len);
+    substr($ISR, 0, $pxrunlen_len) = '';
+    my @PX;
+    while(@pxrunlens){
+        my $runlen = shift @pxrunlens;
+        my $PX = substr($ISR, 0, $runlen);
+        substr($ISR, 0, $runlen) = '';
+        push @PX, $PX;
     }
-       $isr->[PX] = \@PX;
+    $isr->[PX] = \@PX;
 
     return $isr;
 }
@@ -220,6 +233,7 @@ sub index_document {
                 $deltas->[0]; # the single position delta
         }
         else { # term count > 1
+            $deltas = pack "w*", @$deltas;
             push @{ $isr->[DX] }, 
                 2 * $docdelta + 1, # doc delta*2, +1 for >1 term count in doc
                 scalar @{ $isr->[PX] }; # index to position deltas in PX
@@ -318,10 +332,10 @@ sub _serialize_isr {
     $newisr .= pack "L", length $dxst; # runlength
     $newisr .= $dxst; 
 
-    for my $deltas (@{ $isr->[PX] }){        # position deltas
-       $newisr .= pack "w", scalar @$deltas; # runlength
-       $newisr .= pack "w*", @$deltas;
-    }
+    my $runlengths = pack "w*", map {length $_} @{ $isr->[PX] };
+    $newisr .= pack "L", length $runlengths;
+    $newisr .= $runlengths;
+    $newisr .= join '', @{ $isr->[PX] }; # BER delta lists
 
     return $newisr;
 }
@@ -355,39 +369,49 @@ sub optimize_index {
                map { s/^.+?\/(\d+)$/$1/; $_ }
                glob("$path/*");
 
+    #@dirs = @dirs[0..10]; # compact only 10 at once to save memory...
+
+    print STDERR "Compacting segments ", join(" ", @dirs), "\n";
     # gather necessary info for each segment
     my (@segments, %words);
     for my $segment (@dirs){
         my $conf = _configure("$path/$segment");
         my %cdb;
         tie %cdb, 'CDB_File', "$path/$segment/CDB";
-        $words{$_} = 1 for keys %cdb;
+        $words{$_} = 1 for grep {length($_) < 26} keys %cdb;
+        print STDERR "Gathered ", scalar keys %words, " words at segment $segment.           \r";
         push @segments, [ $conf, \%cdb, "$path/$segment" ];
     }
 
+
     # new consolidated index segment
     mkdir "$path/NEWSEGMENT";
+
     # create new cdb
+    print STDERR "Creating new compacted segment.                        \n";
     my $newidx = new CDB_File("$path/NEWSEGMENT/NEW", 
                             "$path/NEWSEGMENT/CDB.tmp") or 
         die "$0: new CDB_File failed: $!\n";
-    open IDS, ">$path/NEWSEGMENT/ids";
 
+    my $ntokens = scalar keys %words;
     for my $word (keys %words){
+        $ntokens--;
+        print STDERR "Compacting $ntokens th word: $word                       \r";
         my $isr = new_isr();
         my $ndocs = 0;
         for my $segment (@segments){
             my($conf, $cdb) = @$segment;
             my $next = _read_isr($cdb, $word);
-            $isr = 
-             _append_isr($isr, $ndocs, $next); 
+            $isr = _append_isr($isr, $ndocs, $next); 
             $ndocs += $conf->{seg_ndocs};
         }
         $newidx->insert($word, _serialize_isr($isr));
     }
 
     # write ids file, delete older segments
+    open IDS, ">$path/NEWSEGMENT/ids";
     for my $segment (@segments){
+        print STDERR "Writing document ids for segment ", $segment->[2], ", deleting segment dir.\r";
         open SEGIDS, $segment->[2] . "/ids"; # path to ids file
         while(<SEGIDS>){
             print IDS $_;
@@ -396,6 +420,7 @@ sub optimize_index {
         rmdir $segment->[2];
     }
 
+    print STDERR "\nWriting disk hash.\n";
     $newidx->finish;
     rename "$path/NEWSEGMENT/NEW", "$path/NEWSEGMENT/CDB";
 
@@ -543,7 +568,7 @@ sub isrator {
     my ($interval, $softlimit, $isr, $align_next_doc, $match_next) = @_;
     my $dxsum = 0; # doc id for this isr
     my $dxn = 0; # location in DX
-    my $px = []; # current pos index
+    my $px = ''; # current pos list
     my $pxsum = 0; # token location in doc
     my $pxn = 0; # location in PX
 
@@ -552,22 +577,21 @@ sub isrator {
         return undef unless $docid;
         if($docid > $dxsum){  # new doc
             ($dxsum, $dxn, $px) = sum_to_doc($isr, $dxsum, $dxn, $docid);
-            ($pxsum, $pxn) = ($px->[0], 0);
+            ($pxsum, $pxn) = (0, 0);
         }
         return $align_next_doc->($dxsum);
     };
 
     my $matcher = sub {
         my $pos = shift;
-        while($pxsum <= $pos){
-            last unless defined $px->[$pxn+1];
-            $pxsum += $px->[++$pxn];
+        if($pxsum <= $pos){
+            ($pxsum, $pxn) = sum_to_pos($px, $pos, $pxn, $pxsum);
         }
         return undef unless ($pxsum > $pos);
         while( ($pxsum-$pos) <= $interval){
             return $pxsum if ($softlimit and $match_next->($pxsum));
-            last unless defined $px->[$pxn+1];
-            $pxsum += $px->[++$pxn];
+            ($pxsum, $pxn) = sum_to_pos($px, $pos, $pxn, $pxsum);
+            last unless $pxsum < $pos;
         }
         return $pxsum if (!$softlimit and ($pxsum-$pos == $interval+1));
         return undef;
@@ -592,8 +616,8 @@ sub sum_to_doc {
     while($sum < $pos){ # current doc < target doc
         $sum += int($dx->[$n]/2);
         $px = ($dx->[$n] % 2) ? 
-               $isr->[PX]->[$dx->[$n+1]] :  # pointer to PX list
-               [ $dx->[$n+1] ];             # single position delta
+               $isr->[PX]->[$dx->[$n+1]] :  # PX list
+               pack "w", $dx->[$n+1];       # single position delta (BER)
         $n += 2;
         last unless defined $dx->[$n];
     }
@@ -836,9 +860,9 @@ sub isr_align_match {
 
     my $dxsum = 0; # doc id for this isr
     my $dxn = 0; # location in DX
-    my $px = []; # current pos index
+    my $px = ''; # current pos list
     my $pxsum = 0; # token location in doc
-    my $pxn = 0; # location in PX
+    my $pxn = 0; # location in PX string
 
     return 
         sub { # the align
@@ -846,16 +870,15 @@ sub isr_align_match {
             #return undef unless (defined $docid and defined $dxsum);
             if($docid > $dxsum){  # new doc
                 ($dxsum, $dxn, $px) = sum_to_doc($isr, $dxsum, $dxn, $docid);
-                ($pxsum, $pxn) = ($px->[0], 0);
+                ($pxsum, $pxn) = (0, 0);
             }
             return $dxsum;
         },
         sub { # the match
             my (undef, $pos) = @_;
             #return () unless defined $pos and defined $pxsum;
-            while($pxsum <= $pos){
-                last unless defined $px->[$pxn+1];
-                $pxsum += $px->[++$pxn];
+            if($pxsum <= $pos){
+                ($pxsum, $pxn) = sum_to_pos($px, $pos, $pxn, $pxsum);
             }
             return ($pxsum > $pos) ? ($pxsum, $pxsum) : ();
         };
@@ -863,6 +886,9 @@ sub isr_align_match {
 
 
 1;
+
+
+__DATA__
 
 =pod
 
@@ -874,7 +900,7 @@ Freq - An inverted text index.
 
 THIS IS ALPHA SOFTWARE
 
-Freq is a text indexer and search utility written in pure Perl. It has several special features not to be found in most available similar programs, namely arbitrarily complex sequence and alternation queries, and proximity searches with both exact counts and limits. There is no result ranking (yet). 
+Freq is a text indexer and search utility written in Perl and C. It has several special features not to be found in most available similar programs, namely arbitrarily complex sequence and alternation queries, and proximity searches with both exact counts and limits. There is no result ranking (yet). 
 
 The index format draws some ideas from the Lucene search engine, with some simplifications and enhancements. The index segments are stored in a CDB disk hash (from dj bernstein).
 
@@ -928,8 +954,77 @@ Ira Joseph Woodhead, ira at sweetpota dot to
 
 =head1 SEE ALSO
 
- Lucene
- CDB_File
+C<Lucene>
+C<Plucene>
+C<CDB_File>
+C<Inline>
 
 =cut
+
+
+__C__
+
+
+/* count how many characters make up the compressed integer 
+   at the beginning of the string px. */
+int next_integer_length(char* px){
+    unsigned int length = 0;
+    unsigned char mask = (1 << 7);
+    if(!*px) return 0; // empty string
+    while(*px & mask){
+        px++;
+        length++;
+    }
+    if(!*px) return 0; // sanity check
+	length++; // final char
+    return (int) length;
+}
+
+/* convert the compressed integer at the beginning of the string
+   px to a int. */
+int next_integer_val(char* px){
+    unsigned int value = 0;
+    unsigned char himask = (1 << 7); // 10000000
+	unsigned char lomask = 127;      // 01111111
+    while(*px & himask){
+        value = ((value << 7) | (*px & lomask));
+        px++;
+    }
+    value = ((value << 7) | *px);
+    return value;
+}
+
+
+/* px is a string of chars representing BER compressed integers.
+   These are position deltas within a document. pxn is the current
+   string index, pxsum is the current sum. sum_to_pos() computes
+   the first position in a document past pos.
+*/
+void sum_to_pos(char* px, int pos, int pxn, int pxsum){
+    INLINE_STACK_VARS;
+    if(strlen(px) <= pxn){
+        INLINE_STACK_RESET;
+        INLINE_STACK_PUSH(sv_2mortal(newSViv(0)));
+        INLINE_STACK_PUSH(sv_2mortal(newSViv(0)));
+        INLINE_STACK_DONE;
+        return;
+    }
+
+    px += pxn; // advance char pointer to current pxn
+    while(*px && (pxsum <= pos)){
+        unsigned int len = next_integer_length(px);
+        pxsum += next_integer_val(px);
+		px += len;
+        pxn += len;
+    }
+    
+    INLINE_STACK_RESET;
+    INLINE_STACK_PUSH(sv_2mortal(newSViv(pxsum)));
+    INLINE_STACK_PUSH(sv_2mortal(newSViv(pxn)));
+    INLINE_STACK_DONE;
+    return;
+}
+
+
+
 
